@@ -221,7 +221,10 @@ class TuyaRC(RemoteEntity):
 
     @property
     def should_poll(self):
-        return True
+        # This entity has no state to poll. Polling competes with learn/send
+        # operations for the single device connection and can reject a
+        # subsequent learn request as busy.
+        return False
 
     @property
     def device_info(self):
