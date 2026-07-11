@@ -345,42 +345,53 @@ class TuyaRC(RemoteEntity):
         raise HomeAssistantError("Turning off is not supported for this device.")
 
     def _update_availibility(self):
-        with self._lock:
-            _LOGGER.debug("Updating device %s availibility...", self._dev_id)
-            try:
-                self._init()
-                status = self._device.status()
-                _LOGGER.debug(f"Device status: {status}")
-                self._available = bool(status) and "Error" not in status
-                if not self._available:
-                    _LOGGER.error("Device is not available, status: %s", status)
-            except Exception as e:
-                self._available = False
-                _LOGGER.error("Failed to update device, exception %s: %s", type(e), e, exc_info=True)
-            # If status succeeded but tinytuya could not detect the control_type
-            # (e.g. device was offline at the time of construction), force a
-            # full re-init on the next poll so detection is retried with a now
-            # responsive device. Without this, send_command() would later raise
-            # RuntimeError on tinytuya >= 1.18.0.
-            if self._available and self._device and not self._device.control_type:
-                _LOGGER.warning(
-                    "control_type for %s is not detected, will re-initialize on next poll",
-                    self._dev_id,
-                )
-                self._available = False
-            # If detection succeeded and we did not have it cached, persist so
-            # future restarts skip the slow detect_control_type() altogether.
-            # We compare against the entry data (not just the in-memory copy)
-            # so that a missed persist on a previous tick is retried.
-            if self._available and self._device and self._device.control_type:
-                self._control_type = self._device.control_type
-                self._persist_control_type(self._control_type)
+        if not self._lock.acquire(blocking=False):
+            _LOGGER.debug("Skipping availability update for busy device %s", self._dev_id)
+            return
+        try:
+            self._update_availibility_locked()
+        finally:
+            self._lock.release()
+
+    def _update_availibility_locked(self):
+        _LOGGER.debug("Updating device %s availibility...", self._dev_id)
+        try:
+            self._init()
+            status = self._device.status()
+            _LOGGER.debug(f"Device status: {status}")
+            self._available = bool(status) and "Error" not in status
             if not self._available:
-                self._deinit()
-            _LOGGER.debug("Device %s is available: %s", self._dev_id, self._available)
+                _LOGGER.error("Device is not available, status: %s", status)
+        except Exception as e:
+            self._available = False
+            _LOGGER.error("Failed to update device, exception %s: %s", type(e), e, exc_info=True)
+        # If status succeeded but tinytuya could not detect the control_type
+        # (e.g. device was offline at the time of construction), force a
+        # full re-init on the next poll so detection is retried with a now
+        # responsive device. Without this, send_command() would later raise
+        # RuntimeError on tinytuya >= 1.18.0.
+        if self._available and self._device and not self._device.control_type:
+            _LOGGER.warning(
+                "control_type for %s is not detected, will re-initialize on next poll",
+                self._dev_id,
+            )
+            self._available = False
+        # If detection succeeded and we did not have it cached, persist so
+        # future restarts skip the slow detect_control_type() altogether.
+        # We compare against the entry data (not just the in-memory copy)
+        # so that a missed persist on a previous tick is retried.
+        if self._available and self._device and self._device.control_type:
+            self._control_type = self._device.control_type
+            self._persist_control_type(self._control_type)
+        if not self._available:
+            self._deinit()
+        _LOGGER.debug("Device %s is available: %s", self._dev_id, self._available)
 
     async def async_update(self):
         """Update the device."""
+        if self._lock.locked():
+            _LOGGER.debug("Skipping availability update for busy device %s", self._dev_id)
+            return
         await self.hass.async_add_executor_job(self._update_availibility)
         await self._async_load_storage_files()
 
